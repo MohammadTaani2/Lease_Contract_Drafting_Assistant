@@ -1,11 +1,12 @@
 """
-Flask application - COMPLETE FIX WITH EXPLICIT .ENV LOADING
+Flask application - COMPLETE FIX WITH CONTRACT PRESERVATION
 
 Key fixes:
 1. Explicit .env file path loading
 2. Handles 3-tuple return from LLM (message, contract, action)
 3. Only updates contract when action is 'updated'
 4. Preserves contracts when action is 'unchanged'
+5. NEVER replaces contract display with error messages
 """
 
 # =====================
@@ -20,8 +21,6 @@ basedir = Path(__file__).resolve().parent
 
 # Load .env from the same directory as app.py
 env_path = basedir / '.env'
-print(f"🔍 Loading .env from: {env_path}")
-print(f"📄 .env exists: {env_path.exists()}")
 
 load_dotenv(dotenv_path=env_path, verbose=True, override=True)
 
@@ -133,11 +132,7 @@ try:
     print("="*60)
     
     api_config = APIConfig.from_env()
-    
-    print(f"✅ API Config loaded successfully")
-    print(f"   OpenAI key: {api_config.openai_api_key[:20]}...")
-    print(f"   Supabase URL: {api_config.supabase_url}")
-    
+
     llm_client = LLMClient(
         openai_api_key=api_config.openai_api_key,
         supabase_url=api_config.supabase_url,
@@ -145,8 +140,7 @@ try:
         cohere_api_key=api_config.cohere_api_key,
         config=ModelConfig(),
     )
-    print("✅ LLM Client initialized successfully")
-    print("="*60 + "\n")
+
     
 except ValueError as e:
     print(f"❌ Error initializing LLM client: {e}")
@@ -167,10 +161,6 @@ except Exception as e:
 def _get_current_contract():
     """Get current contract from Flask session"""
     contract = session.get("current_contract")
-    if contract:
-        print(f"📄 Retrieved contract from Flask session (length: {len(contract)})")
-    else:
-        print("📄 No contract in Flask session")
     return contract
 
 
@@ -184,8 +174,6 @@ def _set_current_contract(contract_text):
     if llm_client:
         llm_client.set_current_contract(contract_text, session_id=chat_id)
     
-    print(f"💾 Stored contract in session + LLM memory (length: {len(contract_text)})")
-
 
 def _clear_current_contract():
     """Clear current contract from session AND LLM memory"""
@@ -198,8 +186,6 @@ def _clear_current_contract():
     if llm_client:
         llm_client.clear_contract(session_id=chat_id)
     
-    print("🗑️ Cleared contract from session + LLM memory")
-
 
 # =====================
 # ROUTES
@@ -214,6 +200,7 @@ def index():
 def chat():
     """
     ✅ COMPLETE FIX: Handles 3-tuple return (message, contract, action)
+    ✅ FIX: Never replace contract display with error messages
     """
     if not llm_client:
         return jsonify({"error": "LLM client not initialized"}), 500
@@ -235,11 +222,6 @@ def chat():
         if not user_message:
             return jsonify({"error": "Message is required"}), 400
 
-        print(f"\n{'='*60}")
-        print(f"📨 Incoming message: {user_message[:100]}")
-        print(f"📦 Frontend contract: {'Yes' if frontend_contract else 'No'}")
-        print(f"💾 Session contract: {'Yes' if session_contract else 'No'}")
-        print(f"📋 Using contract: {'Yes' if current_contract else 'No'}")
 
         # Call LLM with contract and session ID - NOW RETURNS 3 VALUES
         chat_id = _get_chat_id()
@@ -250,21 +232,29 @@ def chat():
             session_id=chat_id
         )
         
-        print(f"🤖 LLM response length: {len(response)}")
-        print(f"📄 Contract returned: {'Yes' if contract_returned else 'No'}")
-        print(f"🎬 Action: {action}")
+       
+        # ✅ FIX: Check if contract_returned is actually a contract or an error message
+        is_error_message = contract_returned and (
+            contract_returned.startswith("⚠️") or 
+            "خطأ" in contract_returned[:100] or
+            "error" in contract_returned[:100].lower() or
+            len(contract_returned) < 200  # Too short to be a real contract
+        )
+        
+        if is_error_message:
+            print(f"⚠️ Detected error message, preserving original contract")
         
         # ✅ CRITICAL: Only update session when contract actually changed
-        if action == 'updated':
-            # Contract was created or modified
+        if action == 'updated' and not is_error_message:
+            # Contract was created or modified successfully
             _set_current_contract(contract_returned)
             print(f"✅ Contract UPDATED in session (length: {len(contract_returned)})")
             contract_to_send = contract_returned
-        elif action == 'unchanged':
-            # Contract exists but wasn't modified (e.g., illegal clause rejected)
-            # Don't update session, but send it so frontend keeps displaying it
+        elif action == 'unchanged' or is_error_message:
+            # Contract exists but wasn't modified OR it's an error message
+            # Keep the existing contract in the display
             print(f"📌 Contract UNCHANGED, keeping current display")
-            contract_to_send = contract_returned
+            contract_to_send = current_contract  # ← KEY FIX: Send current contract, not the error
         else:  # action == 'none'
             # No contract exists
             print(f"❌ No contract")
@@ -279,7 +269,8 @@ def chat():
             extra={
                 "action": action,
                 "has_contract": bool(current_contract),
-                "contract_length": len(contract_to_send) if contract_to_send else 0
+                "contract_length": len(contract_to_send) if contract_to_send else 0,
+                "is_error_message": is_error_message
             }
         )
 
@@ -449,21 +440,8 @@ def internal_error(error):
 if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("🚀 Starting Legal Lease Assistant")
-    print("=" * 60)
-    print("✅ Environment variables loaded from .env")
-    print("✅ 3-tuple return handling (message, contract, action)")
-    print("✅ Contract preservation on illegal clause rejection")
-    print("✅ Smart contract update logic")
-    print("=" * 60)
     
-    # Final verification
-    if llm_client:
-        print("✅ LLM Client is ready")
-    else:
-        print("❌ LLM Client failed to initialize - check errors above")
     
-    print("=" * 60)
-    print(f"🌐 Server starting on http://0.0.0.0:5000")
-    print("=" * 60 + "\n")
-    
+   
+
     app.run(host="0.0.0.0", port=5000, debug=True)
