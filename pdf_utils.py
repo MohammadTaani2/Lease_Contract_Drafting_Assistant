@@ -1,5 +1,5 @@
 """
-PDF generation utilities - PROPERLY FIXED ARABIC TEXT
+PDF generation utilities - FIXED VERSION WITH is_arabic() FUNCTION
 """
 import re
 from io import BytesIO
@@ -21,6 +21,23 @@ except ImportError:
     ARABIC_SUPPORT = False
     print("⚠️ Install: pip install arabic-reshaper python-bidi")
 
+
+def is_arabic(text: str) -> bool:
+    """
+    Check if text contains Arabic characters
+    
+    Arabic Unicode ranges:
+    - 0600-06FF: Arabic
+    - 0750-077F: Arabic Supplement
+    - 08A0-08FF: Arabic Extended-A
+    - FB50-FDFF: Arabic Presentation Forms-A
+    - FE70-FEFF: Arabic Presentation Forms-B
+    """
+    if not text:
+        return False
+    
+    arabic_pattern = re.compile(r'[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]')
+    return bool(arabic_pattern.search(text))
 
 
 def _clean_contract_text(text: str) -> str:
@@ -97,175 +114,179 @@ def generate_pdf(contract_text: str) -> BytesIO:
     """
     Generate PDF with PROPER Arabic text support
     """
-    # Clean text
-    contract_text = _clean_contract_text(contract_text)
-    
-    if not contract_text or len(contract_text.strip()) < 50:
-        raise ValueError("Contract text too short")
-    
-    is_rtl = is_arabic(contract_text)
-    font_name = _register_arabic_font()
-    
-    # PDF setup
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=A4,
-        rightMargin=0.75 * inch,
-        leftMargin=0.75 * inch,
-        topMargin=0.75 * inch,
-        bottomMargin=0.75 * inch,
-    )
-    
-    # Styles
-    title_style = ParagraphStyle(
-        "Title",
-        fontName=font_name,
-        fontSize=16,
-        alignment=TA_CENTER,
-        spaceAfter=20,
-        leading=22,
-        textColor='#1a1a1a',
-    )
-    
-    section_header_style = ParagraphStyle(
-        "SectionHeader",
-        fontName=font_name,
-        fontSize=13,
-        alignment=TA_CENTER,
-        spaceAfter=15,
-        spaceBefore=20,
-        leading=18,
-        textColor='#2c3e50',
-    )
-    
-    field_style = ParagraphStyle(
-        "Field",
-        fontName=font_name,
-        fontSize=11,
-        alignment=TA_RIGHT if is_rtl else TA_LEFT,
-        spaceAfter=6,
-        leading=18,
-    )
-    
-    clause_style = ParagraphStyle(
-        "Clause",
-        fontName=font_name,
-        fontSize=11,
-        alignment=TA_JUSTIFY if is_rtl else TA_LEFT,
-        leading=20,
-        spaceBefore=8,
-        spaceAfter=8,
-        rightIndent=15 if is_rtl else 0,
-        leftIndent=0 if is_rtl else 15,
-    )
-    
-    signature_style = ParagraphStyle(
-        "Signature",
-        fontName=font_name,
-        fontSize=10,
-        alignment=TA_CENTER,
-        spaceAfter=6,
-        spaceBefore=15,
-        leading=16,
-    )
-    
-    story = []
-    lines = contract_text.split("\n")
-    
-    in_header = True
-    in_clauses = False
-    
-    for i, line in enumerate(lines):
-        original_line = line
-        line = line.strip()
-        
-        if not line:
-            if story:
-                story.append(Spacer(1, 0.1 * inch))
-            continue
-        
-        # CRITICAL: Reshape Arabic text BEFORE escaping XML
-        if is_rtl:
-            line = _prepare_arabic_text(line)
-        
-        # Escape XML
-        line = line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        
-        # Detect sections
-        is_title = False
-        is_section_header = False
-        is_field = False
-        is_clause = False
-        is_signature = False
-        
-        # Title (first line with contract keyword)
-        if i < 3 and ("عقد" in line or "CONTRACT" in line.upper()):
-            is_title = True
-        
-        # Section headers
-        elif line in ["شروط العقد", "TERMS AND CONDITIONS", "البنود"]:
-            is_section_header = True
-            in_clauses = True
-            in_header = False
-            story.append(Spacer(1, 0.2 * inch))
-        
-        # Header fields
-        elif any(kw in line for kw in [
-            "المؤجر:", "المستأجر:", "أوصاف المأجور:", "مقدار الإيجار:",
-            "تاريخ ابتداء الإيجار", "مدة الإيجار:", "استعمال المأجور:",
-            "كيفية دفع"
-        ]):
-            is_field = True
-        
-        # Clauses
-        elif re.match(r"^البند\s+(الأول|الثاني|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر|[\u0660-\u0669]+|[0-9]+)", line):
-            is_clause = True
-            in_clauses = True
-        elif in_clauses and re.match(r"^(Article|Clause)\s+\d+", line):
-            is_clause = True
-        
-        # Signature section
-        elif "تليت الشروط" in line or "التوقيع" in line or "Signature" in line:
-            is_signature = True
-            in_clauses = False
-            story.append(Spacer(1, 0.3 * inch))
-        
-        # Auto-detect: if we're in clauses section, treat as clause
-        elif in_clauses and len(line) > 30:
-            is_clause = True
-        
-        # Select style
-        if is_title:
-            style = title_style
-        elif is_section_header:
-            style = section_header_style
-        elif is_signature:
-            style = signature_style
-        elif is_clause:
-            style = clause_style
-        elif is_field:
-            style = field_style
-        else:
-            style = field_style
-        
-        # Add to story
-        try:
-            para = Paragraph(line, style)
-            story.append(para)
-        except Exception as e:
-            print(f"⚠️ Failed to add: {line[:50]}... Error: {e}")
-            continue
-    
-    # Build PDF
-    if not story:
-        raise ValueError("No content to render")
-    
     try:
+        # Clean text
+        contract_text = _clean_contract_text(contract_text)
+        
+        if not contract_text or len(contract_text.strip()) < 50:
+            raise ValueError("Contract text too short")
+        
+        is_rtl = is_arabic(contract_text)
+        font_name = _register_arabic_font()
+        
+        # PDF setup
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(
+            buffer,
+            pagesize=A4,
+            rightMargin=0.75 * inch,
+            leftMargin=0.75 * inch,
+            topMargin=0.75 * inch,
+            bottomMargin=0.75 * inch,
+        )
+        
+        # Styles
+        title_style = ParagraphStyle(
+            "Title",
+            fontName=font_name,
+            fontSize=16,
+            alignment=TA_CENTER,
+            spaceAfter=20,
+            leading=22,
+            textColor='#1a1a1a',
+        )
+        
+        section_header_style = ParagraphStyle(
+            "SectionHeader",
+            fontName=font_name,
+            fontSize=13,
+            alignment=TA_CENTER,
+            spaceAfter=15,
+            spaceBefore=20,
+            leading=18,
+            textColor='#2c3e50',
+        )
+        
+        field_style = ParagraphStyle(
+            "Field",
+            fontName=font_name,
+            fontSize=11,
+            alignment=TA_RIGHT if is_rtl else TA_LEFT,
+            spaceAfter=6,
+            leading=18,
+        )
+        
+        clause_style = ParagraphStyle(
+            "Clause",
+            fontName=font_name,
+            fontSize=11,
+            alignment=TA_JUSTIFY if is_rtl else TA_LEFT,
+            leading=20,
+            spaceBefore=8,
+            spaceAfter=8,
+            rightIndent=15 if is_rtl else 0,
+            leftIndent=0 if is_rtl else 15,
+        )
+        
+        signature_style = ParagraphStyle(
+            "Signature",
+            fontName=font_name,
+            fontSize=10,
+            alignment=TA_CENTER,
+            spaceAfter=6,
+            spaceBefore=15,
+            leading=16,
+        )
+        
+        story = []
+        lines = contract_text.split("\n")
+        
+        in_header = True
+        in_clauses = False
+        
+        for i, line in enumerate(lines):
+            original_line = line
+            line = line.strip()
+            
+            if not line:
+                if story:
+                    story.append(Spacer(1, 0.1 * inch))
+                continue
+            
+            # CRITICAL: Reshape Arabic text BEFORE escaping XML
+            if is_rtl:
+                line = _prepare_arabic_text(line)
+            
+            # Escape XML
+            line = line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            
+            # Detect sections
+            is_title = False
+            is_section_header = False
+            is_field = False
+            is_clause = False
+            is_signature = False
+            
+            # Title (first line with contract keyword)
+            if i < 3 and ("عقد" in line or "CONTRACT" in line.upper()):
+                is_title = True
+            
+            # Section headers
+            elif line in ["شروط العقد", "TERMS AND CONDITIONS", "البنود"]:
+                is_section_header = True
+                in_clauses = True
+                in_header = False
+                story.append(Spacer(1, 0.2 * inch))
+            
+            # Header fields
+            elif any(kw in line for kw in [
+                "المؤجر:", "المستأجر:", "أوصاف المأجور:", "مقدار الإيجار:",
+                "تاريخ ابتداء الإيجار", "مدة الإيجار:", "استعمال المأجور:",
+                "كيفية دفع"
+            ]):
+                is_field = True
+            
+            # Clauses
+            elif re.match(r"^البند\s+(الأول|الثاني|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر|[\u0660-\u0669]+|[0-9]+)", line):
+                is_clause = True
+                in_clauses = True
+            elif in_clauses and re.match(r"^(Article|Clause)\s+\d+", line):
+                is_clause = True
+            
+            # Signature section
+            elif "تليت الشروط" in line or "التوقيع" in line or "Signature" in line:
+                is_signature = True
+                in_clauses = False
+                story.append(Spacer(1, 0.3 * inch))
+            
+            # Auto-detect: if we're in clauses section, treat as clause
+            elif in_clauses and len(line) > 30:
+                is_clause = True
+            
+            # Select style
+            if is_title:
+                style = title_style
+            elif is_section_header:
+                style = section_header_style
+            elif is_signature:
+                style = signature_style
+            elif is_clause:
+                style = clause_style
+            elif is_field:
+                style = field_style
+            else:
+                style = field_style
+            
+            # Add to story
+            try:
+                para = Paragraph(line, style)
+                story.append(para)
+            except Exception as e:
+                print(f"⚠️ Failed to add: {line[:50]}... Error: {e}")
+                continue
+        
+        # Build PDF
+        if not story:
+            raise ValueError("No content to render")
+        
         doc.build(story)
         print(f"✅ PDF generated successfully ({len(story)} elements)")
+        
+        buffer.seek(0)
+        return buffer
+        
     except Exception as e:
-        raise ValueError(f"PDF build failed: {e}")
-    
-    buffer.seek(0)
-    return buffer
+        print(f"❌ PDF generation failed: {e}")
+        import traceback
+        traceback.print_exc()
+        raise ValueError(f"PDF generation failed: {e}")
